@@ -1,0 +1,38 @@
+# JCalendar reference project
+jcalendar/
+
+# PlatformIO
+.pio/
+.vscode/
+*.code-workspace
+
+# Build output
+build/
+.pioenvs/
+.piolibdeps/
+
+# ESP32
+sdkconfig
+sdkconfig.old
+
+# Arduino
+*.bin
+*.elf
+*.hex
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+
+# Debug
+core
+
+# Secrets (if any)
+secrets.h
+wifi_config.h
