@@ -93,6 +93,12 @@ void setup() {
 
 void loop() {
     ledLoop();
+
+#ifdef DISABLE_EPAPER
+    delay(100);
+    return;
+#endif
+
     buttonTick();
 
     if (millis() - gLastActivity > SLEEP_AFTER_MS) {
@@ -108,10 +114,14 @@ void setupHardware(void) {
     ledInit();
     ledFastBlink();
 
+#ifdef DISABLE_EPAPER
+    Serial.println("[Button] Disabled in DISABLE_EPAPER mode");
+#else
     buttonInit();
     buttonAttachClick(onButtonClick);
     buttonAttachDoubleClick(onButtonDoubleClick);
     buttonAttachLongPress(onButtonLongPress);
+#endif
 
     batteryInit();
     prefsInit();
@@ -331,13 +341,14 @@ void onButtonLongPress(void) {
 void enterDeepSleep(void) {
     Serial.println("[Power] Preparing for deep sleep...");
 
+#ifdef DISABLE_EPAPER
+    Serial.println("[Power] Deep sleep skipped in DISABLE_EPAPER mode");
+    return;
+#endif
+
     wifiPowerOff();
 
-#ifdef DISABLE_EPAPER
-    Serial.println("[Power] E-paper disabled, skip display hibernate");
-#else
     displayManager.hibernate();
-#endif
     ledOff();
 
     powerDisableAllWakeup();
