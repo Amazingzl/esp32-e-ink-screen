@@ -22,7 +22,7 @@
 #define WIFI_CONNECT_TIMEOUT_MS     10000
 #define NTP_SYNC_TIMEOUT_MS         10000
 #define SLEEP_MINUTES               120
-#define SLEEP_AFTER_MS              15000
+#define WEATHER_REFRESH_MS          (60UL * 60UL * 1000UL)
 #define CONFIG_PORTAL_MINUTES       5
 #define CONFIG_AP_NAME              "C3EPAPER"
 #define CONFIG_AP_PASS              ""
@@ -31,6 +31,9 @@ static bool gWifiConnected = false;
 static bool gTimeSynced = false;
 static bool gWeatherReady = false;
 static unsigned long gLastActivity = 0;
+static unsigned long gLastWeatherRefreshMs = 0;
+static int gLastDisplayedMinute = -1;
+static int gLastDailySyncYday = -1;
 
 static WeatherForecastData gWeatherData;
 static WeatherLayout gWeatherLayout;
@@ -43,6 +46,8 @@ void runConfigPortal(void);
 void drawHomeScreen(void);
 void drawStatusScreen(const char* status);
 void drawConfigScreen(void);
+void updateTimePartial(void);
+void handleScheduledTasks(void);
 void onButtonClick(void);
 void onButtonDoubleClick(void);
 void onButtonLongPress(void);
@@ -77,8 +82,11 @@ void setup() {
     if (!weatherInit()) {
         Serial.println("[Main] Weather API not configured, will use placeholder");
         drawStatusScreen("Set API Key in weather_api.h");
+    } else if (!wifiHasCredentials()) {
+        Serial.println("[Main] No saved WiFi credentials, starting config portal");
+        runConfigPortal();
+        drawHomeScreen();
     } else {
-        drawStatusScreen("Loading...");
         refreshData();
         if (!gWifiConnected) {
             runConfigPortal();
@@ -87,6 +95,10 @@ void setup() {
     }
 
     wifiPowerOff();
+    gLastWeatherRefreshMs = millis();
+    struct tm bootTime = ntpGetTime();
+    gLastDisplayedMinute = bootTime.tm_min;
+    gLastDailySyncYday = bootTime.tm_yday;
 
     Serial.println("[Main] Setup complete");
 }
@@ -100,12 +112,8 @@ void loop() {
 #endif
 
     buttonTick();
-
-    if (millis() - gLastActivity > SLEEP_AFTER_MS) {
-        Serial.println("[Main] Entering sleep...");
-        delay(100);
-        enterDeepSleep();
-    }
+    handleScheduledTasks();
+    delay(50);
 }
 
 void setupHardware(void) {
@@ -173,7 +181,7 @@ void refreshData(void) {
 
         if (weatherInit()) {
             Serial.println("[Weather] Fetching hourly forecast...");
-            gWeatherReady = weatherFetchHourly(&gWeatherData, 12);
+            gWeatherReady = weatherFetchHourly(&gWeatherData, WEATHER_DISPLAY_HOURS);
             if (gWeatherReady) {
                 weatherPrintData(&gWeatherData);
             } else {
@@ -186,16 +194,15 @@ void refreshData(void) {
 void runConfigPortal(void) {
     gLastActivity = millis();
     ledTripleBlink();
-    drawConfigScreen();
 
     wifiInit();
-    if (wifiStartConfigMode(CONFIG_AP_NAME, CONFIG_AP_PASS, CONFIG_PORTAL_MINUTES)) {
+    if (wifiStartConfigMode(CONFIG_AP_NAME, CONFIG_AP_PASS, CONFIG_PORTAL_MINUTES, drawConfigScreen)) {
         ntpInit();
         gWifiConnected = true;
         gTimeSynced = ntpSync(NTP_SYNC_TIMEOUT_MS);
 
         if (weatherInit()) {
-            gWeatherReady = weatherFetchHourly(&gWeatherData, 12);
+            gWeatherReady = weatherFetchHourly(&gWeatherData, WEATHER_DISPLAY_HOURS);
         }
     } else {
         gWifiConnected = false;
@@ -237,6 +244,70 @@ void drawHomeScreen(void) {
         gWeatherLayout.drawNoData(gTimeSynced ?
             "Weather fetch failed. Check API key." :
             "Time not synced. Configure WiFi.");
+    }
+}
+
+void updateTimePartial(void) {
+#ifdef DISABLE_EPAPER
+    return;
+#endif
+
+    struct tm timeInfo = ntpGetTime();
+    if (timeInfo.tm_year < 100) {
+        return;
+    }
+
+    if (timeInfo.tm_min == gLastDisplayedMinute) {
+        return;
+    }
+
+    gLastDisplayedMinute = timeInfo.tm_min;
+    gWeatherLayout.drawTimePartial(&timeInfo);
+}
+
+void handleScheduledTasks(void) {
+    struct tm timeInfo = ntpGetTime();
+    if (timeInfo.tm_year < 100) {
+        return;
+    }
+
+    updateTimePartial();
+
+    bool needsWeatherRefresh = millis() - gLastWeatherRefreshMs >= WEATHER_REFRESH_MS;
+    bool needsDailyRefresh = timeInfo.tm_hour == 0 && timeInfo.tm_min == 0 &&
+                             timeInfo.tm_yday != gLastDailySyncYday;
+
+    if (!needsWeatherRefresh && !needsDailyRefresh) {
+        return;
+    }
+
+    Serial.printf("[Schedule] Refresh, hourly=%s daily=%s\n",
+                  needsWeatherRefresh ? "yes" : "no",
+                  needsDailyRefresh ? "yes" : "no");
+
+    if (setupNetwork()) {
+        if (needsDailyRefresh) {
+            gTimeSynced = ntpSync(NTP_SYNC_TIMEOUT_MS);
+            timeInfo = ntpGetTime();
+            gLastDailySyncYday = timeInfo.tm_yday;
+        }
+
+        if (weatherInit()) {
+            gWeatherReady = weatherFetchHourly(&gWeatherData, WEATHER_DISPLAY_HOURS);
+            if (gWeatherReady) {
+                weatherPrintData(&gWeatherData);
+            }
+        }
+
+        wifiPowerOff();
+        gLastWeatherRefreshMs = millis();
+        drawHomeScreen();
+    } else {
+        wifiPowerOff();
+        gLastWeatherRefreshMs = millis();
+        if (needsDailyRefresh) {
+            gLastDailySyncYday = timeInfo.tm_yday;
+        }
     }
 }
 
@@ -310,6 +381,8 @@ void onButtonClick(void) {
     refreshData();
     drawHomeScreen();
     wifiPowerOff();
+    gLastWeatherRefreshMs = millis();
+    gLastDisplayedMinute = ntpGetMinute();
 }
 
 void onButtonDoubleClick(void) {
@@ -319,6 +392,8 @@ void onButtonDoubleClick(void) {
     runConfigPortal();
     drawHomeScreen();
     wifiPowerOff();
+    gLastWeatherRefreshMs = millis();
+    gLastDisplayedMinute = ntpGetMinute();
     gLastActivity = millis();
 }
 

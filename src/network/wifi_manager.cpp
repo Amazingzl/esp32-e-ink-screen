@@ -10,60 +10,15 @@
 #include <esp_wifi.h>
 
 static WifiStatus _status = WIFI_DISCONNECTED;
+static bool _wifiEventRegistered = false;
+static volatile uint8_t _lastDisconnectReason = 0;
+static bool _suppressDisconnectLog = false;
 
-static const char* wifiAuthModeName(wifi_auth_mode_t authMode) {
-    switch (authMode) {
-        case WIFI_AUTH_OPEN: return "OPEN";
-        case WIFI_AUTH_WEP: return "WEP";
-        case WIFI_AUTH_WPA_PSK: return "WPA";
-        case WIFI_AUTH_WPA2_PSK: return "WPA2";
-        case WIFI_AUTH_WPA_WPA2_PSK: return "WPA/WPA2";
-        case WIFI_AUTH_WPA2_ENTERPRISE: return "WPA2-ENT";
-        case WIFI_AUTH_WPA3_PSK: return "WPA3";
-        case WIFI_AUTH_WPA2_WPA3_PSK: return "WPA2/WPA3";
-        default: return "UNKNOWN";
-    }
-}
-
-static bool wifiFindBestAp(const char* targetSsid, int32_t* bestChannel, uint8_t bestBssid[6]) {
-    Serial.printf("[WiFi] Scanning for SSID: %s\n", targetSsid);
-
-    int32_t networkCount = WiFi.scanNetworks(false, true);
-    if (networkCount <= 0) {
-        Serial.printf("[WiFi] Scan found no networks (%ld)\n", networkCount);
-        WiFi.scanDelete();
-        return false;
-    }
-
-    int32_t bestRssi = -128;
-    bool found = false;
-
-    for (int32_t i = 0; i < networkCount; i++) {
-        if (WiFi.SSID(i) != targetSsid) {
-            continue;
-        }
-
-        found = true;
-        int32_t rssi = WiFi.RSSI(i);
-        int32_t channel = WiFi.channel(i);
-        wifi_auth_mode_t authMode = WiFi.encryptionType(i);
-
-        Serial.printf("[WiFi] Found target: RSSI=%ld dBm, channel=%ld, auth=%s, BSSID=%s\n",
-                      rssi, channel, wifiAuthModeName(authMode), WiFi.BSSIDstr(i).c_str());
-
-        if (rssi > bestRssi) {
-            bestRssi = rssi;
-            *bestChannel = channel;
-            memcpy(bestBssid, WiFi.BSSID(i), 6);
-        }
-    }
-
-    if (!found) {
-        Serial.printf("[WiFi] Target SSID not found. Nearby networks: %ld\n", networkCount);
-    }
-
-    WiFi.scanDelete();
-    return found;
+static bool wifiIsAuthFailure(uint8_t reason) {
+    return reason == WIFI_REASON_AUTH_EXPIRE ||
+           reason == WIFI_REASON_AUTH_FAIL ||
+           reason == WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT ||
+           reason == WIFI_REASON_HANDSHAKE_TIMEOUT;
 }
 
 static void wifiApplyStaSettings(void) {
@@ -75,16 +30,60 @@ static void wifiApplyStaSettings(void) {
     esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N);
 }
 
+static void wifiRegisterEventLogger(void) {
+    if (_wifiEventRegistered) {
+        return;
+    }
+
+    WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
+        uint8_t reason = info.wifi_sta_disconnected.reason;
+        _lastDisconnectReason = reason;
+        if (_suppressDisconnectLog) {
+            return;
+        }
+        Serial.printf("[WiFi] Disconnected, reason=%u (%s)\n",
+                      reason,
+                      WiFi.disconnectReasonName((wifi_err_reason_t)reason));
+    }, WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
+
+    _wifiEventRegistered = true;
+}
+
+static bool wifiReadStaCredentials(char* ssid, size_t ssidLen, char* password, size_t passwordLen) {
+    wifi_config_t config;
+    memset(&config, 0, sizeof(config));
+
+    if (esp_wifi_get_config(WIFI_IF_STA, &config) != ESP_OK) {
+        return false;
+    }
+
+    strlcpy(ssid, reinterpret_cast<const char*>(config.sta.ssid), ssidLen);
+    strlcpy(password, reinterpret_cast<const char*>(config.sta.password), passwordLen);
+    return ssid[0] != '\0';
+}
+
 void wifiInit(void) {
+    wifiRegisterEventLogger();
     wifiApplyStaSettings();
     WiFi.setAutoReconnect(true);  // 启用自动重连
     WiFi.persistent(false);       // 使用项目自己的NVS凭据，避免ESP SDK旧凭据干扰
     _status = WIFI_DISCONNECTED;
 }
 
+bool wifiHasCredentials(void) {
+    char ssid[33] = {0};
+    return prefsGetString(PREF_WIFI_SSID, ssid, sizeof(ssid)) > 0;
+}
+
 static bool wifiWaitConnected(uint32_t timeoutMs) {
     uint32_t startTime = millis();
     while (WiFi.status() != WL_CONNECTED) {
+        if (wifiIsAuthFailure(_lastDisconnectReason)) {
+            Serial.printf("[WiFi] Auth failure, reason=%u (%s)\n",
+                          _lastDisconnectReason,
+                          WiFi.disconnectReasonName((wifi_err_reason_t)_lastDisconnectReason));
+            return false;
+        }
         if (millis() - startTime >= timeoutMs) {
             return false;
         }
@@ -96,9 +95,6 @@ static bool wifiWaitConnected(uint32_t timeoutMs) {
 bool wifiConnect(uint32_t timeoutMs) {
     char ssid[33] = {0};
     char password[65] = {0};
-    int32_t channel = 0;
-    uint8_t bssid[6] = {0};
-    bool hasTargetAp = false;
     
     wifiApplyStaSettings();
     
@@ -106,18 +102,13 @@ bool wifiConnect(uint32_t timeoutMs) {
     if (prefsGetString(PREF_WIFI_SSID, ssid, sizeof(ssid)) > 0) {
         prefsGetString(PREF_WIFI_PASS, password, sizeof(password));
         Serial.printf("[WiFi] Connecting to %s... password length=%u\n", ssid, strlen(password));
-        hasTargetAp = wifiFindBestAp(ssid, &channel, bssid);
+        _lastDisconnectReason = 0;
         WiFi.disconnect(false, false);
         delay(100);
-        if (hasTargetAp && channel > 0) {
-            Serial.printf("[WiFi] Connecting on scanned channel %ld and BSSID %02X:%02X:%02X:%02X:%02X:%02X\n",
-                          channel, bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
-            WiFi.begin(ssid, password, channel, bssid);
-        } else {
-            WiFi.begin(ssid, password);
-        }
+        WiFi.begin(ssid, password);
     } else if (WiFi.SSID().length() > 0) {
         Serial.printf("[WiFi] No NVS credentials, trying ESP stored SSID: %s\n", WiFi.SSID().c_str());
+        _lastDisconnectReason = 0;
         WiFi.begin();
     } else {
         Serial.println("[WiFi] No saved credentials");
@@ -128,23 +119,9 @@ bool wifiConnect(uint32_t timeoutMs) {
     _status = WIFI_CONNECTING;
     
     if (!wifiWaitConnected(timeoutMs)) {
-        if (ssid[0] != '\0' && hasTargetAp) {
-            Serial.println("[WiFi] BSSID connection timeout, retrying without fixed BSSID");
-            WiFi.disconnect(false, false);
-            delay(500);
-            wifiApplyStaSettings();
-            WiFi.begin(ssid, password);
-
-            if (!wifiWaitConnected(timeoutMs)) {
-                Serial.println("[WiFi] Connection timeout");
-                _status = WIFI_CONNECTION_FAILED;
-                return false;
-            }
-        } else {
-            Serial.println("[WiFi] Connection timeout");
-            _status = WIFI_CONNECTION_FAILED;
-            return false;
-        }
+        Serial.println("[WiFi] Connection timeout");
+        _status = WIFI_CONNECTION_FAILED;
+        return false;
     }
     
     Serial.printf("[WiFi] Connected, IP: %s\n", WiFi.localIP().toString().c_str());
@@ -191,15 +168,20 @@ String wifiGetLocalIP(void) {
     return WiFi.localIP().toString();
 }
 
-bool wifiStartConfigMode(const char* apName, const char* apPass, uint8_t timeoutMinutes) {
+bool wifiStartConfigMode(const char* apName,
+                         const char* apPass,
+                         uint8_t timeoutMinutes,
+                         WifiConfigPortalStartedCallback onStarted) {
     Serial.printf("[WiFi] Starting AP mode: %s\n", apName);
 
+    _suppressDisconnectLog = true;
     WiFi.disconnect(true, true);  // 断开并清除ESP存储的凭据
     WiFi.softAPdisconnect(true);
     WiFi.mode(WIFI_OFF);
     delay(500);
     WiFi.mode(WIFI_AP);
     delay(200);
+    _suppressDisconnectLog = false;
     WiFi.setTxPower(WIFI_POWER_7dBm);
     esp_wifi_set_bandwidth(WIFI_IF_AP, WIFI_BW_HT20);
     esp_wifi_set_protocol(WIFI_IF_AP, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N);
@@ -215,7 +197,7 @@ bool wifiStartConfigMode(const char* apName, const char* apPass, uint8_t timeout
         IPAddress(255, 255, 255, 0)
     );
     wm.setConfigPortalTimeout(timeoutMinutes > 0 ? timeoutMinutes * 60 : 0);
-    wm.setAPCallback([](WiFiManager*) {
+    wm.setAPCallback([onStarted](WiFiManager*) {
         Serial.println("[WiFi] Config AP is active");
         Serial.printf("[WiFi] AP SSID: %s\n", WiFi.softAPSSID().c_str());
         Serial.printf("[WiFi] AP IP: %s\n", WiFi.softAPIP().toString().c_str());
@@ -224,13 +206,23 @@ bool wifiStartConfigMode(const char* apName, const char* apPass, uint8_t timeout
         Serial.printf("[WiFi] WiFi mode: %d\n", WiFi.getMode());
         Serial.printf("[WiFi] TX power: %d\n", WiFi.getTxPower());
         Serial.printf("[WiFi] Stations: %d\n", WiFi.softAPgetStationNum());
+        if (onStarted) {
+            onStarted();
+        }
     });
 
     bool connected = wm.startConfigPortal(apName, strlen(apPass) > 0 ? apPass : nullptr);
     if (connected) {
         _status = WIFI_CONNECTED;
         Serial.printf("[WiFi] Config complete, IP: %s\n", WiFi.localIP().toString().c_str());
-        if (WiFi.SSID().length() > 0) {
+        char ssid[33] = {0};
+        char password[65] = {0};
+        if (wifiReadStaCredentials(ssid, sizeof(ssid), password, sizeof(password))) {
+            Serial.printf("[WiFi] Saving configured SSID: %s, password length=%u\n", ssid, strlen(password));
+            wifiSaveCredentials(ssid, password);
+        } else if (WiFi.SSID().length() > 0) {
+            Serial.printf("[WiFi] Saving connected SSID fallback: %s, password length=%u\n",
+                          WiFi.SSID().c_str(), WiFi.psk().length());
             wifiSaveCredentials(WiFi.SSID().c_str(), WiFi.psk().c_str());
         }
         return true;
@@ -242,6 +234,10 @@ bool wifiStartConfigMode(const char* apName, const char* apPass, uint8_t timeout
     }
     _status = WIFI_CONNECTION_FAILED;
     return false;
+}
+
+bool wifiStartConfigMode(const char* apName, const char* apPass, uint8_t timeoutMinutes) {
+    return wifiStartConfigMode(apName, apPass, timeoutMinutes, nullptr);
 }
 
 void wifiSaveCredentials(const char* ssid, const char* password) {

@@ -1,8 +1,19 @@
 #include "weather_layout.h"
+#include <U8g2_for_Adafruit_GFX.h>
+
+#define CN_FONT u8g2_font_wqy12_t_gb2312a
 
 static const char* WEEKDAY_NAMES[] = {
-    "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"
+    "周日", "周一", "周二", "周三", "周四", "周五", "周六"
 };
+
+static String formatHour(const String& fxTime) {
+    int tIdx = fxTime.indexOf('T');
+    if (tIdx >= 0 && tIdx + 3 < fxTime.length()) {
+        return fxTime.substring(tIdx + 1, tIdx + 3) + "时";
+    }
+    return "--时";
+}
 
 WeatherLayout::WeatherLayout() {
     _screenW = 400;
@@ -36,10 +47,9 @@ void WeatherLayout::drawNoData(const char* reason) {
     do {
         displayManager.fillScreen(COLOR_WHITE);
         displayManager.drawRect(6, 6, _screenW - 12, _screenH - 12, COLOR_BLACK);
-        displayManager.setTextSize(2);
+        displayManager.setU8g2Font(CN_FONT);
         displayManager.setTextColor(COLOR_BLACK);
-        displayManager.setCursor(30, 70);
-        displayManager.print("Weather Unavailable");
+        displayManager.drawUTF8(30, 86, "暂无数据");
         displayManager.setTextSize(1);
         displayManager.setCursor(30, 120);
         displayManager.print(reason);
@@ -50,307 +60,197 @@ void WeatherLayout::draw(WeatherForecastData* weatherData,
                          const struct tm* timeInfo,
                          int batteryPercent, uint16_t batteryVoltage,
                          int sleepMinutes) {
-    Serial.println("[UI] Weather draw begin");
+    Serial.println("[UI] Almanac weather draw begin");
     displayManager.setFullWindow();
     displayManager.firstPage();
 
     do {
         displayManager.fillScreen(COLOR_WHITE);
+        displayManager.setFont(nullptr);
+        displayManager.setU8g2Font(CN_FONT);
 
         drawHeader(timeInfo);
-        drawCurrentCondition(weatherData);
+        drawAlmanac(timeInfo);
         drawHourlyBlocks(weatherData);
-        drawTempChart(weatherData);
         drawBottomBar(weatherData, batteryPercent, batteryVoltage, sleepMinutes);
 
     } while (displayManager.nextPage());
-    Serial.println("[UI] Weather draw end");
+    Serial.println("[UI] Almanac weather draw end");
 }
 
-// ─────────────────────────────────────────────
-// Header: date + weekday
-// ─────────────────────────────────────────────
 void WeatherLayout::drawHeader(const struct tm* timeInfo) {
-    int y0 = 6;
-    int h = 28;
+    displayManager.setTextColor(COLOR_BLACK);
+    displayManager.setU8g2Font(CN_FONT);
 
-    displayManager.fillRect(6, y0, _screenW - 12, h, COLOR_BLACK);
-    displayManager.setTextColor(COLOR_WHITE);
-    displayManager.setTextSize(2);
-
-    char title[16];
-    snprintf(title, sizeof(title), "Weather");
-    displayManager.setCursor(16, y0 + 8);
-    displayManager.print(title);
-
-    char dateStr[24];
+    char dateStr[40];
     int weekday = (timeInfo && timeInfo->tm_wday >= 0 && timeInfo->tm_wday < 7)
         ? timeInfo->tm_wday
         : 0;
-    snprintf(dateStr, sizeof(dateStr), "%d-%02d-%02d %s",
-             timeInfo->tm_year + 1900, timeInfo->tm_mon + 1, timeInfo->tm_mday,
+    snprintf(dateStr, sizeof(dateStr), "%04d-%02d-%02d  %s",
+             timeInfo ? timeInfo->tm_year + 1900 : 1970,
+             timeInfo ? timeInfo->tm_mon + 1 : 1,
+             timeInfo ? timeInfo->tm_mday : 1,
              WEEKDAY_NAMES[weekday]);
-    displayManager.setTextSize(1);
-    int16_t x1, y1;
-    uint16_t w, h2;
-    displayManager.getTextBounds(dateStr, 0, 0, &x1, &y1, &w, &h2);
-    displayManager.setCursor(_screenW - 12 - 10 - w, y0 + 10);
-    displayManager.print(dateStr);
+
+    displayManager.drawUTF8(14, 22, "今日");
+    displayManager.drawUTF8(14, 40, dateStr);
+
+    drawTimeBox(timeInfo);
+    displayManager.drawLine(6, 54, _screenW - 6, 54, COLOR_BLACK);
 }
 
-// ─────────────────────────────────────────────
-// Current condition: big temp + weather text
-// ─────────────────────────────────────────────
-void WeatherLayout::drawCurrentCondition(const WeatherForecastData* data) {
-    int y0 = 38;
-    int h = 30;
+void WeatherLayout::drawTimeBox(const struct tm* timeInfo) {
+    int x = 300;
+    int y = 10;
+    int w = 84;
+    int h = 34;
 
+    displayManager.fillRect(x, y, w, h, COLOR_WHITE);
+    displayManager.drawRect(x, y, w, h, COLOR_BLACK);
+    displayManager.setFont(nullptr);
     displayManager.setTextColor(COLOR_BLACK);
+    displayManager.setTextSize(2);
 
-    if (data && data->count > 0) {
-        const HourlyWeatherData& now = data->hours[0];
-        displayManager.setTextSize(3);
-        displayManager.setCursor(16, y0 + 2);
-        displayManager.print(weatherGetIconChar(now.icon).c_str());
-        displayManager.print(" ");
-
-        char tempStr[16];
-        snprintf(tempStr, sizeof(tempStr), "%sC", now.temp.c_str());
-        displayManager.print(tempStr);
-
-        displayManager.setTextSize(1);
-        displayManager.setCursor(200, y0 + 8);
-        displayManager.print("Icon ");
-        displayManager.print(now.icon.c_str());
-        displayManager.setCursor(200, y0 + 22);
-        displayManager.print("Wind ");
-        displayManager.print(now.windScale.c_str());
-    } else {
-        displayManager.setTextSize(2);
-        displayManager.setCursor(16, y0 + 6);
-        displayManager.print("--C");
-        displayManager.setTextSize(1);
-        displayManager.setCursor(200, y0 + 14);
-        displayManager.print("No data");
-    }
+    char timeStr[8];
+    snprintf(timeStr, sizeof(timeStr), "%02d:%02d",
+             timeInfo ? timeInfo->tm_hour : 0,
+             timeInfo ? timeInfo->tm_min : 0);
+    int16_t x1, y1;
+    uint16_t tw, th;
+    displayManager.getTextBounds(timeStr, 0, 0, &x1, &y1, &tw, &th);
+    displayManager.setCursor(x + (w - tw) / 2, y + 10);
+    displayManager.print(timeStr);
 }
 
-// ─────────────────────────────────────────────
-// 6-hour blocks: time | temp | icon
-// ─────────────────────────────────────────────
+void WeatherLayout::drawTimePartial(const struct tm* timeInfo) {
+    int x = 296;
+    int y = 8;
+
+    displayManager.setPartialWindow(x, y, 88, 40);
+    displayManager.firstPage();
+    do {
+        displayManager.fillRect(x, y, 88, 40, COLOR_WHITE);
+        drawTimeBox(timeInfo);
+    } while (displayManager.nextPage());
+    displayManager.setFullWindow();
+}
+
+void WeatherLayout::drawAlmanac(const struct tm* timeInfo) {
+    int x = 10;
+    int y = 66;
+    int w = _screenW - 20;
+    int h = 108;
+    int splitX = x + 152;
+
+    displayManager.drawRect(x, y, w, h, COLOR_BLACK);
+    displayManager.drawLine(splitX, y, splitX, y + h, COLOR_BLACK);
+    displayManager.setTextColor(COLOR_BLACK);
+    displayManager.setU8g2Font(CN_FONT);
+
+    displayManager.setTextColor(COLOR_RED);
+    displayManager.drawUTF8(x + 12, y + 20, "农历");
+    displayManager.setTextColor(COLOR_BLACK);
+    displayManager.drawUTF8(x + 12, y + 44, "五月廿三");
+    displayManager.drawUTF8(x + 12, y + 66, "丙午年 五月");
+
+    int day = timeInfo ? timeInfo->tm_mday : 1;
+    const char* clash[] = {"冲鼠", "冲牛", "冲虎", "冲兔", "冲龙", "冲蛇"};
+    const char* direction[] = {"煞北", "煞西", "煞南", "煞东"};
+    char detail[40];
+    snprintf(detail, sizeof(detail), "%s  %s", clash[day % 6], direction[day % 4]);
+    displayManager.drawUTF8(x + 12, y + 88, detail);
+
+    displayManager.setTextColor(COLOR_RED);
+    displayManager.drawUTF8(splitX + 12, y + 20, "今日黄历");
+    displayManager.drawUTF8(splitX + 12, y + 48, "宜");
+    displayManager.setTextColor(COLOR_BLACK);
+    displayManager.drawUTF8(splitX + 40, y + 48, "出行  纳财  祭祀  修造");
+    displayManager.setTextColor(COLOR_RED);
+    displayManager.drawUTF8(splitX + 12, y + 72, "忌");
+    displayManager.setTextColor(COLOR_BLACK);
+    displayManager.drawUTF8(splitX + 40, y + 72, "嫁娶  动土  开仓  安葬");
+    displayManager.drawUTF8(splitX + 12, y + 96, "吉时  卯 / 巳 / 申");
+}
+
+void WeatherLayout::drawCenteredUTF8(int x, int y, int w, const char* text) {
+    int16_t tw = displayManager.getUTF8Width(text);
+    displayManager.drawUTF8(x + (w - tw) / 2, y, text);
+}
+
 void WeatherLayout::drawHourlyBlocks(const WeatherForecastData* data) {
-    int y0 = 72;
+    int y0 = 192;
     int blockH = 56;
-    int margin = 6;
+    int margin = 10;
     int usableW = _screenW - 2 * margin;
     int colW = usableW / WEATHER_DISPLAY_HOURS;
-
-    displayManager.drawLine(margin, y0 + blockH, _screenW - margin, y0 + blockH, COLOR_BLACK);
-
     int count = (data && data->count > 0) ? data->count : 0;
     int displayCount = (count > WEATHER_DISPLAY_HOURS) ? WEATHER_DISPLAY_HOURS : count;
 
+    displayManager.setTextColor(COLOR_BLACK);
+    displayManager.setU8g2Font(CN_FONT);
+    displayManager.drawUTF8(12, y0 - 8, "近6小时天气");
+
+    for (int i = 0; i < WEATHER_DISPLAY_HOURS; i++) {
+        int x = margin + i * colW;
+        if (i > 0) {
+            displayManager.drawLine(x, y0, x, y0 + blockH, COLOR_BLACK);
+        }
+    }
+    displayManager.drawRect(margin, y0, usableW, blockH, COLOR_BLACK);
+
     for (int i = 0; i < displayCount; i++) {
-        int cx = margin + i * colW + colW / 2;
+        int x = margin + i * colW;
         const HourlyWeatherData& h = data->hours[i];
 
-        // 解析小时
-        String timeStr = "??:??";
-        int tIdx = h.fxTime.indexOf('T');
-        if (tIdx >= 0) {
-            timeStr = h.fxTime.substring(tIdx + 1, tIdx + 6);
+        String timeStr = formatHour(h.fxTime);
+        drawCenteredUTF8(x, y0 + 15, colW, timeStr.c_str());
+
+        String text = h.text.length() > 0 ? h.text : weatherGetIconChar(h.icon);
+        if (displayManager.getUTF8Width(text.c_str()) > colW - 6) {
+            text = weatherGetIconChar(h.icon);
         }
+        drawCenteredUTF8(x, y0 + 35, colW, text.c_str());
 
-        // 时间
-        displayManager.setTextSize(1);
-        displayManager.setTextColor(COLOR_BLACK);
-        int16_t x1, y1;
-        uint16_t tw, th;
-        displayManager.getTextBounds(timeStr.c_str(), 0, 0, &x1, &y1, &tw, &th);
-        displayManager.setCursor(cx - tw / 2, y0 + 10);
-        displayManager.print(timeStr.c_str());
-
-        // 温度
         char tempStr[8];
-        snprintf(tempStr, sizeof(tempStr), "%sC", h.temp.c_str());
-        displayManager.setTextSize(2);
+        snprintf(tempStr, sizeof(tempStr), "%s", h.temp.c_str());
+        displayManager.setTextSize(1);
+        int16_t x1, y1;
+        uint16_t tw, th;
         displayManager.getTextBounds(tempStr, 0, 0, &x1, &y1, &tw, &th);
-        displayManager.setCursor(cx - tw / 2, y0 + 28);
+        int cx = x + colW / 2;
+        int tx = cx - (tw + 12) / 2;
+        displayManager.setCursor(tx, y0 + 45);
         displayManager.print(tempStr);
-
-        // 天气图标
-        displayManager.setTextSize(1);
-        const String iconChar = weatherGetIconChar(h.icon);
-        displayManager.getTextBounds(iconChar.c_str(), 0, 0, &x1, &y1, &tw, &th);
-        displayManager.setCursor(cx - tw / 2, y0 + 48);
-        displayManager.print(iconChar.c_str());
-    }
-
-    // 如果数据不够6个，剩余块画虚线边框
-    for (int i = displayCount; i < WEATHER_DISPLAY_HOURS; i++) {
-        int x = margin + i * colW;
-        displayManager.drawLine(x, y0, x, y0 + blockH, COLOR_BLACK);
-    }
-
-    // 分隔竖线
-    for (int i = 1; i < WEATHER_DISPLAY_HOURS; i++) {
-        int x = margin + i * colW;
-        displayManager.drawLine(x, y0, x, y0 + blockH, COLOR_BLACK);
+        displayManager.drawCircle(tx + tw + 3, y0 + 45, 2, COLOR_BLACK);
+        displayManager.setCursor(tx + tw + 7, y0 + 45);
+        displayManager.print("C");
     }
 }
 
-// ─────────────────────────────────────────────
-// Temperature curve chart
-// ─────────────────────────────────────────────
-void WeatherLayout::drawTempChart(const WeatherForecastData* data) {
-    int chartY0 = 132;
-    int chartH = 106;
-    int margin = 6;
-    int usableW = _screenW - 2 * margin;
-    int colW = usableW / WEATHER_DISPLAY_HOURS;
-
-    int count = (data && data->count > 0) ? data->count : 0;
-    int displayCount = (count > WEATHER_DISPLAY_HOURS) ? WEATHER_DISPLAY_HOURS : count;
-
-    // 图表边框
-    int chartX0 = margin + 28;
-    int chartW = usableW - 28;
-    displayManager.drawRect(chartX0, chartY0, chartW, chartH, COLOR_BLACK);
-
-    if (displayCount < 2) {
-        displayManager.setTextSize(1);
-        displayManager.setTextColor(COLOR_BLACK);
-        displayManager.setCursor(chartX0 + 20, chartY0 + chartH / 2 - 5);
-        displayManager.print("Insufficient data for chart");
-        return;
-    }
-
-    // 计算温度范围
-    int minTemp = 99;
-    int maxTemp = -99;
-    for (int i = 0; i < displayCount; i++) {
-        int t = data->hours[i].temp.toInt();
-        if (t < minTemp) minTemp = t;
-        if (t > maxTemp) maxTemp = t;
-    }
-    if (minTemp == maxTemp) {
-        minTemp -= 1;
-        maxTemp += 1;
-    }
-
-    int range = maxTemp - minTemp;
-    if (range < 4) {
-        int pad = (4 - range) / 2;
-        minTemp -= pad;
-        maxTemp += pad;
-        range = maxTemp - minTemp;
-    }
-
-    // Y轴标签（最高/最低温度）
-    displayManager.setTextSize(1);
-    displayManager.setTextColor(COLOR_BLACK);
-
-    char label[8];
-    snprintf(label, sizeof(label), "%dC", maxTemp);
-    displayManager.setCursor(margin + 2, chartY0 + 2);
-    displayManager.print(label);
-
-    snprintf(label, sizeof(label), "%dC", minTemp);
-    displayManager.setCursor(margin + 2, chartY0 + chartH - 10);
-    displayManager.print(label);
-
-    // 计算每个数据点的位置
-    int dataSpacing = chartW / (displayCount - 1);
-    int px[WEATHER_DISPLAY_HOURS];
-    int py[WEATHER_DISPLAY_HOURS];
-
-    for (int i = 0; i < displayCount; i++) {
-        int t = data->hours[i].temp.toInt();
-        px[i] = chartX0 + i * dataSpacing;
-        py[i] = chartY0 + chartH - 6 - (int)((float)(t - minTemp) / range * (chartH - 12));
-    }
-
-    // 绘制温度曲线（连接线）
-    for (int i = 0; i < displayCount - 1; i++) {
-        displayManager.drawLine(px[i], py[i], px[i + 1], py[i + 1], COLOR_BLACK);
-    }
-
-    // 绘制温度数据点（圆点）
-    for (int i = 0; i < displayCount; i++) {
-        displayManager.fillCircle(px[i], py[i], 3, COLOR_BLACK);
-        displayManager.drawCircle(px[i], py[i], 3, COLOR_WHITE);
-        displayManager.fillCircle(px[i], py[i], 2, COLOR_BLACK);
-    }
-
-    // 在数据点上方标注温度值
-    for (int i = 0; i < displayCount; i++) {
-        char val[8];
-        snprintf(val, sizeof(val), "%sC", data->hours[i].temp.c_str());
-        displayManager.setTextSize(1);
-        displayManager.setTextColor(COLOR_BLACK);
-        int16_t x1, y1;
-        uint16_t tw, th;
-        displayManager.getTextBounds(val, 0, 0, &x1, &y1, &tw, &th);
-        displayManager.setCursor(px[i] - tw / 2, py[i] - 14);
-        displayManager.print(val);
-    }
-
-    // 水平参考线（虚线）
-    int refY = chartY0 + chartH / 2;
-    for (int x = chartX0 + 4; x < chartX0 + chartW - 4; x += 6) {
-        displayManager.drawPixel(x, refY, COLOR_BLACK);
-    }
-
-    // X轴时间标签（在图表底部）
-    for (int i = 0; i < displayCount; i++) {
-        String timeStr = "??:??";
-        int tIdx = data->hours[i].fxTime.indexOf('T');
-        if (tIdx >= 0) {
-            timeStr = data->hours[i].fxTime.substring(tIdx + 1, tIdx + 6);
-        }
-        displayManager.setTextSize(1);
-        displayManager.setTextColor(COLOR_BLACK);
-        int16_t x1, y1;
-        uint16_t tw, th;
-        displayManager.getTextBounds(timeStr.c_str(), 0, 0, &x1, &y1, &tw, &th);
-        displayManager.setCursor(px[i] - tw / 2, chartY0 + chartH + 2);
-        displayManager.print(timeStr.c_str());
-    }
-
-}
-
-// ─────────────────────────────────────────────
-// Bottom bar: details + battery
-// ─────────────────────────────────────────────
 void WeatherLayout::drawBottomBar(const WeatherForecastData* data,
-                                   int batteryPercent, uint16_t batteryVoltage,
-                                   int sleepMinutes) {
-    int y0 = 248;
+                                  int batteryPercent, uint16_t batteryVoltage,
+                                  int sleepMinutes) {
+    int y0 = 268;
     int h = _screenH - y0 - 6;
 
-    displayManager.fillRect(6, y0, _screenW - 12, h, COLOR_RED);
+    displayManager.drawRect(6, y0, _screenW - 12, h, COLOR_BLACK);
+    displayManager.setTextColor(COLOR_BLACK);
+    displayManager.setU8g2Font(CN_FONT);
 
-    displayManager.setTextColor(COLOR_WHITE);
-    displayManager.setTextSize(1);
-
-    String details;
+    char left[80];
     if (data && data->count > 0) {
         const HourlyWeatherData& now = data->hours[0];
-        char buf[64];
-        snprintf(buf, sizeof(buf), "Wind scale: %s  Hum: %s%%  Pop: %s%%",
-                 now.windScale.c_str(),
-                 now.humidity.c_str(), now.pop.c_str());
-        details = buf;
+        snprintf(left, sizeof(left), "当前 %s %s C  湿度 %s%%",
+                 now.text.c_str(), now.temp.c_str(), now.humidity.c_str());
     } else {
-        details = "Weather data unavailable";
+        snprintf(left, sizeof(left), "当前天气暂无");
     }
+    displayManager.drawUTF8(14, y0 + 20, left);
 
-    displayManager.setCursor(16, y0 + 6);
-    displayManager.print(details.c_str());
+    char right[48];
+    snprintf(right, sizeof(right), "电量 %d%%", batteryPercent);
+    int16_t w = displayManager.getUTF8Width(right);
+    displayManager.drawUTF8(_screenW - 14 - w, y0 + 20, right);
 
-    char bottom[48];
-    snprintf(bottom, sizeof(bottom), "Update every %dmin  Bat: %d%% %dmV",
-             sleepMinutes, batteryPercent, batteryVoltage);
-    displayManager.setCursor(16, y0 + 20);
-    displayManager.print(bottom);
+    displayManager.setTextColor(COLOR_BLACK);
 }

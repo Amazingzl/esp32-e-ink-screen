@@ -120,6 +120,11 @@ public:
      * @param font Adafruit_GFX 字体
      */
     void setFont(const GFXfont* font);
+
+    /**
+     * @brief 设置 U8g2 字体，用于 UTF-8/中文文本
+     */
+    void setU8g2Font(const uint8_t* font);
     
     /**
      * @brief 设置文本颜色
@@ -148,6 +153,12 @@ public:
     void print(const String& text);
     void print(int num);
     void print(float num, int digits = 2);
+
+    /**
+     * @brief 绘制 UTF-8 文本，y 为字体基线
+     */
+    void drawUTF8(int16_t x, int16_t y, const char* text);
+    int16_t getUTF8Width(const char* text);
     
     /**
      * @brief 获取文本边界框

@@ -4,9 +4,11 @@
  */
 
 #include "display_manager.h"
+#include <U8g2_for_Adafruit_GFX.h>
 
 // 全局实例
 DisplayManager displayManager;
+static U8G2_FOR_ADAFRUIT_GFX u8g2Fonts;
 
 DisplayManager::DisplayManager() 
     : _initialized(false)
@@ -16,6 +18,11 @@ DisplayManager::DisplayManager()
 
 void DisplayManager::init() {
     epaperInit(115200);
+    u8g2Fonts.begin(display);
+    u8g2Fonts.setFontMode(1);
+    u8g2Fonts.setFontDirection(0);
+    u8g2Fonts.setForegroundColor(COLOR_BLACK);
+    u8g2Fonts.setBackgroundColor(COLOR_WHITE);
     _initialized = true;
     _inPartialMode = false;
 }
@@ -102,12 +109,19 @@ void DisplayManager::setFont(const GFXfont* font) {
     display.setFont(font);
 }
 
+void DisplayManager::setU8g2Font(const uint8_t* font) {
+    u8g2Fonts.setFont(font);
+}
+
 void DisplayManager::setTextColor(uint16_t color) {
     display.setTextColor(color);
+    u8g2Fonts.setForegroundColor(color);
 }
 
 void DisplayManager::setTextColor(uint16_t color, uint16_t background) {
     display.setTextColor(color, background);
+    u8g2Fonts.setForegroundColor(color);
+    u8g2Fonts.setBackgroundColor(background);
 }
 
 void DisplayManager::setTextSize(uint8_t size) {
@@ -132,6 +146,14 @@ void DisplayManager::print(int num) {
 
 void DisplayManager::print(float num, int digits) {
     display.print(num, digits);
+}
+
+void DisplayManager::drawUTF8(int16_t x, int16_t y, const char* text) {
+    u8g2Fonts.drawUTF8(x, y, text);
+}
+
+int16_t DisplayManager::getUTF8Width(const char* text) {
+    return u8g2Fonts.getUTF8Width(text);
 }
 
 void DisplayManager::getTextBounds(const char* text, int16_t x, int16_t y,

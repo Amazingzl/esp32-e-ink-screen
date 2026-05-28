@@ -92,17 +92,18 @@ void powerPrintWakeupReason(void) {
 }
 
 void powerEnableGpioWakeup(uint8_t gpioNum, uint8_t level) {
-    // ESP32 C3 使用 gpio 唤醒
-    // 配置 GPIO 为输入
+    // ESP32-C3 deep sleep GPIO wakeup needs esp_deep_sleep_enable_gpio_wakeup.
     gpio_pullup_en((gpio_num_t)gpioNum);
     gpio_pulldown_dis((gpio_num_t)gpioNum);
-    
-    // 使用 gpio 唤醒（ESP32 C3 支持）
-    esp_err_t err = gpio_wakeup_enable((gpio_num_t)gpioNum, 
-                                       level ? GPIO_INTR_HIGH_LEVEL : GPIO_INTR_LOW_LEVEL);
-    if (err == ESP_OK) {
-        esp_sleep_enable_gpio_wakeup();
-    }
+
+    uint64_t gpioMask = 1ULL << gpioNum;
+    esp_deepsleep_gpio_wake_up_mode_t mode = level ?
+        ESP_GPIO_WAKEUP_GPIO_HIGH :
+        ESP_GPIO_WAKEUP_GPIO_LOW;
+    esp_err_t err = esp_deep_sleep_enable_gpio_wakeup(gpioMask, mode);
+
+    Serial.printf("[Power] GPIO wakeup GPIO%u level=%u: %s\n",
+                  gpioNum, level, esp_err_to_name(err));
 }
 
 void powerEnableTimerWakeup(uint32_t minutes) {

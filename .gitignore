@@ -36,3 +36,4 @@ core
 # Secrets (if any)
 secrets.h
 wifi_config.h
+*.jpg

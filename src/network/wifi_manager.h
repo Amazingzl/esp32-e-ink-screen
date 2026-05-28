@@ -11,6 +11,8 @@
 
 #include <Arduino.h>
 
+typedef void (*WifiConfigPortalStartedCallback)(void);
+
 // WiFi 状态
 typedef enum {
     WIFI_DISCONNECTED = 0,
@@ -23,6 +25,11 @@ typedef enum {
  * @brief 初始化 WiFi 管理器
  */
 void wifiInit(void);
+
+/**
+ * @brief 检查是否保存过 WiFi 凭据
+ */
+bool wifiHasCredentials(void);
 
 /**
  * @brief 连接到已保存的 WiFi
@@ -66,6 +73,14 @@ String wifiGetLocalIP(void);
  * @return true 配置完成
  */
 bool wifiStartConfigMode(const char* apName, const char* apPass, uint8_t timeoutMinutes);
+
+/**
+ * @brief 启动配置模式，并在 AP 广播后回调
+ */
+bool wifiStartConfigMode(const char* apName,
+                         const char* apPass,
+                         uint8_t timeoutMinutes,
+                         WifiConfigPortalStartedCallback onStarted);
 
 /**
  * @brief 保存 WiFi 凭据

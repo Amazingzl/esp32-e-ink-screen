@@ -332,8 +332,16 @@ bool weatherFetchHourly(WeatherForecastData* data, int hours) {
         h.temp = value;
         jsonReadStringField(objStart, objEnd, "icon", value, sizeof(value));
         h.icon = value;
-        h.text = h.icon;
-        h.windDir = "";
+        if (jsonReadStringField(objStart, objEnd, "text", value, sizeof(value))) {
+            h.text = value;
+        } else {
+            h.text = weatherGetIconChar(h.icon);
+        }
+        if (jsonReadStringField(objStart, objEnd, "windDir", value, sizeof(value))) {
+            h.windDir = value;
+        } else {
+            h.windDir = "";
+        }
         jsonReadStringField(objStart, objEnd, "windScale", value, sizeof(value));
         h.windScale = value;
         jsonReadStringField(objStart, objEnd, "humidity", value, sizeof(value));
