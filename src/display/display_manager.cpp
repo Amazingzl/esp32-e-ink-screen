@@ -122,7 +122,7 @@ void DisplayManager::print(const char* text) {
     display.print(text);
 }
 
-void DisplayManager::print(String text) {
+void DisplayManager::print(const String& text) {
     display.print(text);
 }
 

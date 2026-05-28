@@ -145,7 +145,7 @@ public:
      * @brief 打印文本
      */
     void print(const char* text);
-    void print(String text);
+    void print(const String& text);
     void print(int num);
     void print(float num, int digits = 2);
     

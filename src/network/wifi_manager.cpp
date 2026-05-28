@@ -11,43 +11,150 @@
 
 static WifiStatus _status = WIFI_DISCONNECTED;
 
-void wifiInit(void) {
+static const char* wifiAuthModeName(wifi_auth_mode_t authMode) {
+    switch (authMode) {
+        case WIFI_AUTH_OPEN: return "OPEN";
+        case WIFI_AUTH_WEP: return "WEP";
+        case WIFI_AUTH_WPA_PSK: return "WPA";
+        case WIFI_AUTH_WPA2_PSK: return "WPA2";
+        case WIFI_AUTH_WPA_WPA2_PSK: return "WPA/WPA2";
+        case WIFI_AUTH_WPA2_ENTERPRISE: return "WPA2-ENT";
+        case WIFI_AUTH_WPA3_PSK: return "WPA3";
+        case WIFI_AUTH_WPA2_WPA3_PSK: return "WPA2/WPA3";
+        default: return "UNKNOWN";
+    }
+}
+
+static bool wifiFindBestAp(const char* targetSsid, int32_t* bestChannel, uint8_t bestBssid[6]) {
+    Serial.printf("[WiFi] Scanning for SSID: %s\n", targetSsid);
+
+    int32_t networkCount = WiFi.scanNetworks(false, true);
+    if (networkCount <= 0) {
+        Serial.printf("[WiFi] Scan found no networks (%ld)\n", networkCount);
+        WiFi.scanDelete();
+        return false;
+    }
+
+    int32_t bestRssi = -128;
+    bool found = false;
+
+    for (int32_t i = 0; i < networkCount; i++) {
+        if (WiFi.SSID(i) != targetSsid) {
+            continue;
+        }
+
+        found = true;
+        int32_t rssi = WiFi.RSSI(i);
+        int32_t channel = WiFi.channel(i);
+        wifi_auth_mode_t authMode = WiFi.encryptionType(i);
+
+        Serial.printf("[WiFi] Found target: RSSI=%ld dBm, channel=%ld, auth=%s, BSSID=%s\n",
+                      rssi, channel, wifiAuthModeName(authMode), WiFi.BSSIDstr(i).c_str());
+
+        if (rssi > bestRssi) {
+            bestRssi = rssi;
+            *bestChannel = channel;
+            memcpy(bestBssid, WiFi.BSSID(i), 6);
+        }
+    }
+
+    if (!found) {
+        Serial.printf("[WiFi] Target SSID not found. Nearby networks: %ld\n", networkCount);
+    }
+
+    WiFi.scanDelete();
+    return found;
+}
+
+static void wifiApplyStaSettings(void) {
     WiFi.mode(WIFI_STA);
-    WiFi.setAutoReconnect(false);  // 我们手动控制重连
+    WiFi.setSleep(false);
+    WiFi.setTxPower(WIFI_POWER_19_5dBm);
+    esp_wifi_set_ps(WIFI_PS_NONE);
+    esp_wifi_set_bandwidth(WIFI_IF_STA, WIFI_BW_HT20);
+    esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N);
+}
+
+void wifiInit(void) {
+    wifiApplyStaSettings();
+    WiFi.setAutoReconnect(true);  // 启用自动重连
+    WiFi.persistent(false);       // 使用项目自己的NVS凭据，避免ESP SDK旧凭据干扰
     _status = WIFI_DISCONNECTED;
+}
+
+static bool wifiWaitConnected(uint32_t timeoutMs) {
+    uint32_t startTime = millis();
+    while (WiFi.status() != WL_CONNECTED) {
+        if (millis() - startTime >= timeoutMs) {
+            return false;
+        }
+        delay(100);
+    }
+    return true;
 }
 
 bool wifiConnect(uint32_t timeoutMs) {
     char ssid[33] = {0};
     char password[65] = {0};
+    int32_t channel = 0;
+    uint8_t bssid[6] = {0};
+    bool hasTargetAp = false;
     
-    WiFi.mode(WIFI_STA);
-
-    // Prefer app-managed credentials, then fall back to credentials stored by WiFiManager/ESP.
+    wifiApplyStaSettings();
+    
+    // 优先使用项目保存的凭据，避免ESP SDK里残留的旧密码导致AUTH_FAIL。
     if (prefsGetString(PREF_WIFI_SSID, ssid, sizeof(ssid)) > 0) {
         prefsGetString(PREF_WIFI_PASS, password, sizeof(password));
-        Serial.printf("[WiFi] Connecting to %s...\n", ssid);
-        WiFi.begin(ssid, password);
-    } else {
-        Serial.println("[WiFi] Connecting with stored ESP credentials...");
+        Serial.printf("[WiFi] Connecting to %s... password length=%u\n", ssid, strlen(password));
+        hasTargetAp = wifiFindBestAp(ssid, &channel, bssid);
+        WiFi.disconnect(false, false);
+        delay(100);
+        if (hasTargetAp && channel > 0) {
+            Serial.printf("[WiFi] Connecting on scanned channel %ld and BSSID %02X:%02X:%02X:%02X:%02X:%02X\n",
+                          channel, bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
+            WiFi.begin(ssid, password, channel, bssid);
+        } else {
+            WiFi.begin(ssid, password);
+        }
+    } else if (WiFi.SSID().length() > 0) {
+        Serial.printf("[WiFi] No NVS credentials, trying ESP stored SSID: %s\n", WiFi.SSID().c_str());
         WiFi.begin();
+    } else {
+        Serial.println("[WiFi] No saved credentials");
+        _status = WIFI_CONNECTION_FAILED;
+        return false;
     }
 
     _status = WIFI_CONNECTING;
     
-    // 等待连接
-    uint32_t startTime = millis();
-    while (WiFi.status() != WL_CONNECTED) {
-        if (millis() - startTime >= timeoutMs) {
+    if (!wifiWaitConnected(timeoutMs)) {
+        if (ssid[0] != '\0' && hasTargetAp) {
+            Serial.println("[WiFi] BSSID connection timeout, retrying without fixed BSSID");
+            WiFi.disconnect(false, false);
+            delay(500);
+            wifiApplyStaSettings();
+            WiFi.begin(ssid, password);
+
+            if (!wifiWaitConnected(timeoutMs)) {
+                Serial.println("[WiFi] Connection timeout");
+                _status = WIFI_CONNECTION_FAILED;
+                return false;
+            }
+        } else {
             Serial.println("[WiFi] Connection timeout");
             _status = WIFI_CONNECTION_FAILED;
             return false;
         }
-        delay(100);
     }
     
     Serial.printf("[WiFi] Connected, IP: %s\n", WiFi.localIP().toString().c_str());
     _status = WIFI_CONNECTED;
+    
+    // 保存成功的凭据到我们的存储
+    if (ssid[0] != '\0') {
+        wifiSaveCredentials(ssid, password);
+    }
+    
     return true;
 }
 
@@ -87,13 +194,13 @@ String wifiGetLocalIP(void) {
 bool wifiStartConfigMode(const char* apName, const char* apPass, uint8_t timeoutMinutes) {
     Serial.printf("[WiFi] Starting AP mode: %s\n", apName);
 
-    WiFi.disconnect(true, false);
+    WiFi.disconnect(true, true);  // 断开并清除ESP存储的凭据
     WiFi.softAPdisconnect(true);
     WiFi.mode(WIFI_OFF);
     delay(500);
     WiFi.mode(WIFI_AP);
     delay(200);
-    WiFi.setTxPower(WIFI_POWER_19_5dBm);
+    WiFi.setTxPower(WIFI_POWER_7dBm);
     esp_wifi_set_bandwidth(WIFI_IF_AP, WIFI_BW_HT20);
     esp_wifi_set_protocol(WIFI_IF_AP, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N);
 
@@ -145,9 +252,13 @@ void wifiSaveCredentials(const char* ssid, const char* password) {
 void wifiClearCredentials(void) {
     prefsRemove(PREF_WIFI_SSID);
     prefsRemove(PREF_WIFI_PASS);
+    WiFi.disconnect(true, true);  // 同时清除ESP存储的凭据
 }
 
 void wifiPowerOff(void) {
+    WiFi.setAutoReconnect(false);
+    WiFi.disconnect(false, false);
+    delay(200);
     WiFi.mode(WIFI_OFF);
     _status = WIFI_DISCONNECTED;
     Serial.println("[WiFi] Powered off");

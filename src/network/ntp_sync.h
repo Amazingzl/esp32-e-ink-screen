@@ -11,12 +11,14 @@
 #include <Arduino.h>
 #include <time.h>
 
-// NTP 服务器
+// NTP 服务器 - 使用多个国内服务器提高成功率
 #define NTP_SERVER_1    "ntp.aliyun.com"
-#define NTP_SERVER_2    "ntp1.aliyun.com"
-#define NTP_SERVER_3    "time.windows.com"
+#define NTP_SERVER_2    "ntp.tencent.com"
+#define NTP_SERVER_3    "cn.pool.ntp.org"
 
 // 默认时区（中国东八区）
+// POSIX 时区格式: 标准时区名+偏移量[夏令时规则]
+// CST-8 表示中国标准时间，比 UTC 快 8 小时
 #define DEFAULT_TIMEZONE    "CST-8"
 
 /**
