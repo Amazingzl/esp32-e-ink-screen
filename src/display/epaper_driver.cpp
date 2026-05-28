@@ -5,6 +5,12 @@
 
 #include "epaper_driver.h"
 
+#include <SPI.h>
+
+namespace {
+constexpr uint16_t EPD_RESET_DURATION_MS = 10;
+}
+
 // ============================================
 // Display Instance Definition
 // ============================================
@@ -22,9 +28,10 @@ void epaperInit(uint32_t serial_diag_bitrate) {
     // 初始化参数说明：
     // - serial_diag_bitrate: 串口诊断波特率
     // - initial: 是否首次初始化
-    // - reset_duration: 复位脉冲时长(ms)，2ms适用于Waveshare板
+    // - reset_duration: 复位脉冲时长(ms)，10ms 与 jcalendar/Z21 测试固件一致
     // - pulldown_rst_mode: RST下拉模式
-    display.init(serial_diag_bitrate, true, 2, false);
+    SPI.begin(SPI_SCK, -1, SPI_MOSI, SPI_CS);
+    display.init(serial_diag_bitrate, true, EPD_RESET_DURATION_MS, false);
     
     // 设置默认旋转方向
     display.setRotation(0);
@@ -36,7 +43,8 @@ void epaperInit(uint32_t serial_diag_bitrate) {
 }
 
 void epaperReinit(bool initial) {
-    display.init(0, initial, 2, false);
+    SPI.begin(SPI_SCK, -1, SPI_MOSI, SPI_CS);
+    display.init(0, initial, EPD_RESET_DURATION_MS, false);
     display.setRotation(0);
 }
 

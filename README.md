@@ -34,7 +34,7 @@ ESP32 C3 墨水屏显示项目，基于 jcalendar 项目架构参考实现。
 | CS | GPIO 6 |
 | DC | GPIO 7 |
 | RST | GPIO 8 |
-| BUSY | GPIO 9 |
+| BUSY | GPIO 3 |
 
 ### 其他外设
 
@@ -94,7 +94,7 @@ cd /Users/wuzhenlong/esp32-e-ink-screen
 
 ```ini
 build_flags = 
-    -D EPD_DRIVER=GxEPD2_420c  ; 修改为你的屏幕型号
+    -D EPD_DRIVER=GxEPD2_420c_Z21  ; 修改为你的屏幕型号
 ```
 
 ### 4. 编译上传
@@ -122,7 +122,6 @@ do {
     displayManager.fillScreen(COLOR_WHITE);
     // 绘制内容...
 } while (displayManager.nextPage());
-displayManager.fullRefresh();
 
 // 局部刷新
 displayManager.setPartialWindow(x, y, w, h);  // x和w必须是8的倍数
@@ -130,7 +129,6 @@ displayManager.firstPage();
 do {
     // 绘制局部内容...
 } while (displayManager.nextPage());
-displayManager.partialRefresh();
 ```
 
 ### 注意事项

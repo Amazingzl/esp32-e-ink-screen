@@ -30,7 +30,7 @@
 #define SPI_CS          GPIO_NUM_6   // CS - 片选
 #define SPI_DC          GPIO_NUM_7   // DC - 数据/命令选择
 #define SPI_RST         GPIO_NUM_8   // RST - 复位
-#define SPI_BUSY        GPIO_NUM_9   // BUSY - 忙信号
+#define SPI_BUSY        GPIO_NUM_3   // BUSY - 忙信号，避开 ESP32-C3 启动/Flash 相关 GPIO9
 
 // ============================================
 // Input Pins
@@ -52,8 +52,9 @@
 
 // ============================================
 // I2C Pins (Optional - for sensors)
+// 当前墨水屏接线占用 GPIO3/GPIO4；如需 I2C 传感器，需要重新分配空闲引脚。
 // ============================================
-#define I2C_SDA         GPIO_NUM_3   // I2C 数据
+#define I2C_SDA         GPIO_NUM_3   // I2C 数据 (与 SPI_BUSY 共享，不能同时使用)
 #define I2C_SCL         GPIO_NUM_4   // I2C 时钟 (与 SPI_SCK 共享，不能同时使用)
 
 // ============================================

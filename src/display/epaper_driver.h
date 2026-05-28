@@ -20,7 +20,7 @@
 // 根据 platformio.ini 中的定义选择驱动
 
 #ifndef EPD_DRIVER
-#define EPD_DRIVER GxEPD2_420c
+#define EPD_DRIVER GxEPD2_420c_Z21
 #endif
 
 // 屏幕参数定义

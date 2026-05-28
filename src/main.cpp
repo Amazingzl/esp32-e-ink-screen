@@ -43,6 +43,14 @@
 #define WIFI_CONNECT_TIMEOUT_MS     10000   // WiFi连接超时
 #define NTP_SYNC_TIMEOUT_MS         5000    // NTP同步超时
 #define SLEEP_MINUTES               30      // 休眠时长（分钟）
+#define SLEEP_AFTER_MS              15000   // 刷新后保持唤醒时长
+#define CONFIG_PORTAL_MINUTES       5       // 配网门户超时
+#define CONFIG_AP_NAME              "C3EPAPER"
+#define CONFIG_AP_PASS              ""
+
+static bool gWifiConnected = false;
+static bool gTimeSynced = false;
+static unsigned long gLastActivity = 0;
 
 // ============================================
 // Function Prototypes
@@ -50,8 +58,11 @@
 void setupHardware(void);
 void setupDisplay(void);
 bool setupNetwork(void);
-void drawHelloWorld(void);
+void refreshData(void);
+void runConfigPortal(void);
+void drawHomeScreen(void);
 void drawStatusScreen(const char* status);
+void drawConfigScreen(void);
 void onButtonClick(void);
 void onButtonDoubleClick(void);
 void onButtonLongPress(void);
@@ -68,6 +79,7 @@ void setup() {
     Serial.println("\n\n=================================");
     Serial.printf("  %s v%s\n", APP_NAME, APP_VERSION);
     Serial.println("=================================\n");
+    gLastActivity = millis();
     
     // 打印唤醒原因
     powerPrintWakeupReason();
@@ -85,19 +97,12 @@ void setup() {
     // 初始化显示
     setupDisplay();
     
-    // 显示启动画面
     drawStatusScreen("Starting...");
-    
-    // 尝试连接网络
-    if (setupNetwork()) {
-        // 同步时间
-        ntpSync(NTP_SYNC_TIMEOUT_MS);
-        drawStatusScreen("Time Synced");
-        delay(500);
+    refreshData();
+    if (!gWifiConnected) {
+        runConfigPortal();
     }
-    
-    // 显示主界面
-    drawHelloWorld();
+    drawHomeScreen();
     
     // 关闭 WiFi 省电
     wifiPowerOff();
@@ -118,9 +123,7 @@ void loop() {
     // 这里可以添加其他需要持续运行的任务
     // 但对于墨水屏应用，通常进入休眠更合适
     
-    // 示例：10秒后进入休眠
-    static unsigned long lastActivity = millis();
-    if (millis() - lastActivity > 10000) {
+    if (millis() - gLastActivity > SLEEP_AFTER_MS) {
         Serial.println("[Main] Entering sleep...");
         delay(100);
         enterDeepSleep();
@@ -180,12 +183,14 @@ bool setupNetwork(void) {
     // 尝试连接 WiFi
     if (wifiConnect(WIFI_CONNECT_TIMEOUT_MS)) {
         ledOn();  // 常亮表示连接成功
+        gWifiConnected = true;
         
         // 初始化 NTP
         ntpInit();
         return true;
     } else {
         ledSlowBlink();  // 慢闪表示连接失败
+        gWifiConnected = false;
         return false;
     }
 }
@@ -193,78 +198,169 @@ bool setupNetwork(void) {
 // ============================================
 // UI Functions
 // ============================================
-void drawHelloWorld(void) {
-    Serial.println("[UI] Drawing Hello World");
-    
-    // 全屏刷新示例
+void refreshData(void) {
+    gWifiConnected = false;
+    gTimeSynced = false;
+
+    if (setupNetwork()) {
+        gTimeSynced = ntpSync(NTP_SYNC_TIMEOUT_MS);
+    }
+}
+
+void runConfigPortal(void) {
+    gLastActivity = millis();
+    ledTripleBlink();
+    drawConfigScreen();
+
+    wifiInit();
+    if (wifiStartConfigMode(CONFIG_AP_NAME, CONFIG_AP_PASS, CONFIG_PORTAL_MINUTES)) {
+        ntpInit();
+        gWifiConnected = true;
+        gTimeSynced = ntpSync(NTP_SYNC_TIMEOUT_MS);
+    } else {
+        gWifiConnected = false;
+        gTimeSynced = false;
+    }
+    gLastActivity = millis();
+}
+
+void drawHomeScreen(void) {
+    Serial.println("[UI] Drawing home screen");
+
+    const char* weekdays[] = {
+        "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"
+    };
+
+    struct tm timeInfo = ntpGetTime();
+    uint16_t voltage = batteryReadVoltage();
+    uint8_t battery = batteryGetPercentage();
+    BatteryStatus batteryStatus = batteryGetStatus();
+
+    epaperReinit(false);
     displayManager.setFullWindow();
     displayManager.firstPage();
     
     do {
-        // 清屏
         displayManager.fillScreen(COLOR_WHITE);
-        
-        // 绘制边框
-        displayManager.drawRect(10, 10, 
-                                displayManager.width() - 20, 
-                                displayManager.height() - 20, 
-                                COLOR_BLACK);
-        
-        // 绘制标题
-        displayManager.setCursor(50, 50);
-        displayManager.setTextColor(COLOR_BLACK);
-        displayManager.print("ESP32 C3 E-Paper");
-        
-        // 绘制版本
-        displayManager.setCursor(50, 80);
-        displayManager.print("Version: ");
+
+        displayManager.drawRect(6, 6, displayManager.width() - 12, displayManager.height() - 12, COLOR_BLACK);
+        displayManager.fillRect(6, 6, displayManager.width() - 12, 34, COLOR_BLACK);
+        displayManager.setTextSize(2);
+        displayManager.setCursor(18, 16);
+        displayManager.setTextColor(COLOR_WHITE);
+        displayManager.print(APP_NAME);
+
+        displayManager.setTextSize(1);
+        displayManager.setCursor(304, 20);
         displayManager.print(APP_VERSION);
-        
-        // 绘制时间（如果已同步）
-        if (ntpIsSynced()) {
-            displayManager.setCursor(50, 120);
-            displayManager.print("Time: ");
-            displayManager.print(ntpFormatTime("%H:%M:%S").c_str());
-            
-            displayManager.setCursor(50, 150);
-            displayManager.print("Date: ");
-            displayManager.print(ntpFormatTime("%Y-%m-%d").c_str());
+
+        displayManager.setTextSize(3);
+        displayManager.setCursor(28, 78);
+        displayManager.setTextColor(COLOR_BLACK);
+        if (gTimeSynced) {
+            char dateLine[24];
+            snprintf(dateLine, sizeof(dateLine), "%04d-%02d-%02d",
+                     timeInfo.tm_year + 1900, timeInfo.tm_mon + 1, timeInfo.tm_mday);
+            displayManager.print(dateLine);
+        } else {
+            displayManager.print("Time not set");
         }
-        
-        // 绘制电池信息
-        displayManager.setCursor(50, 200);
+
+        displayManager.setTextSize(2);
+        displayManager.setCursor(30, 122);
+        if (gTimeSynced) {
+            char timeLine[20];
+            snprintf(timeLine, sizeof(timeLine), "%02d:%02d  %s",
+                     timeInfo.tm_hour, timeInfo.tm_min, weekdays[timeInfo.tm_wday]);
+            displayManager.print(timeLine);
+        } else if (gWifiConnected) {
+            displayManager.print("NTP sync failed");
+        } else {
+            displayManager.print("Double click to config WiFi");
+        }
+
+        displayManager.drawLine(18, 156, displayManager.width() - 18, 156, COLOR_BLACK);
+
+        displayManager.setTextSize(1);
+        displayManager.setCursor(28, 184);
+        displayManager.print("WiFi: ");
+        displayManager.print(gWifiConnected ? "Connected" : "Offline");
+        if (gWifiConnected) {
+            displayManager.print("  RSSI ");
+            displayManager.print((int)wifiGetRSSI());
+            displayManager.print(" dBm");
+        }
+
+        displayManager.setCursor(28, 206);
         displayManager.print("Battery: ");
-        displayManager.print(batteryGetPercentage());
+        displayManager.print(battery);
         displayManager.print("%");
-        
-        // 绘制提示
-        displayManager.setCursor(50, 250);
-        displayManager.setTextColor(COLOR_RED);
-        displayManager.print("Click: Refresh | Double: Config | Long: Sleep");
-        
+        displayManager.print("  ");
+        displayManager.print((int)voltage);
+        displayManager.print(" mV");
+        if (batteryStatus == BATTERY_LOW) {
+            displayManager.setTextColor(COLOR_RED);
+            displayManager.print("  LOW");
+            displayManager.setTextColor(COLOR_BLACK);
+        }
+
+        displayManager.setCursor(28, 228);
+        displayManager.print("Next wake: ");
+        displayManager.print(SLEEP_MINUTES);
+        displayManager.print(" min");
+
+        displayManager.fillRect(6, displayManager.height() - 34, displayManager.width() - 12, 28, COLOR_RED);
+        displayManager.setTextColor(COLOR_WHITE);
+        displayManager.setCursor(18, displayManager.height() - 16);
+        displayManager.print("Click refresh | Double config | Long sleep");
     } while (displayManager.nextPage());
-    
-    // 全屏刷新
-    displayManager.fullRefresh();
 }
 
 void drawStatusScreen(const char* status) {
-    // 局部刷新示例 - 只刷新状态区域
-    int16_t statusY = displayManager.height() - 40;
-    int16_t statusH = 30;
-    
-    displayManager.setPartialWindow(0, statusY, displayManager.width(), statusH);
+    epaperReinit(false);
+    displayManager.setFullWindow();
     displayManager.firstPage();
     
     do {
-        displayManager.fillRect(0, statusY, displayManager.width(), statusH, COLOR_WHITE);
-        displayManager.setCursor(20, statusY + 20);
+        displayManager.fillScreen(COLOR_WHITE);
+        displayManager.drawRect(10, 10, displayManager.width() - 20, displayManager.height() - 20, COLOR_BLACK);
+        displayManager.setTextSize(2);
+        displayManager.setCursor(30, 70);
         displayManager.setTextColor(COLOR_BLACK);
+        displayManager.print(APP_NAME);
+        displayManager.setTextSize(2);
+        displayManager.setCursor(30, 130);
         displayManager.print(status);
     } while (displayManager.nextPage());
-    
-    // 局部刷新
-    displayManager.partialRefresh();
+}
+
+void drawConfigScreen(void) {
+    epaperReinit(false);
+    displayManager.setFullWindow();
+    displayManager.firstPage();
+
+    do {
+        displayManager.fillScreen(COLOR_WHITE);
+        displayManager.drawRect(10, 10, displayManager.width() - 20, displayManager.height() - 20, COLOR_BLACK);
+        displayManager.setTextColor(COLOR_BLACK);
+        displayManager.setTextSize(2);
+        displayManager.setCursor(28, 52);
+        displayManager.print("WiFi Config Mode");
+
+        displayManager.setTextSize(1);
+        displayManager.setCursor(30, 108);
+        displayManager.print("AP: ");
+        displayManager.print(CONFIG_AP_NAME);
+        displayManager.setCursor(30, 132);
+        displayManager.print("Pass: ");
+        displayManager.print(CONFIG_AP_PASS);
+        displayManager.setCursor(30, 170);
+        displayManager.print("Open portal and save WiFi.");
+        displayManager.setCursor(30, 202);
+        displayManager.print("Timeout: ");
+        displayManager.print(CONFIG_PORTAL_MINUTES);
+        displayManager.print(" minutes");
+    } while (displayManager.nextPage());
 }
 
 // ============================================
@@ -272,21 +368,27 @@ void drawStatusScreen(const char* status) {
 // ============================================
 void onButtonClick(void) {
     Serial.println("[Button] Click");
+    gLastActivity = millis();
     
-    // 刷新屏幕
-    drawHelloWorld();
+    drawStatusScreen("Refreshing...");
+    refreshData();
+    drawHomeScreen();
+    wifiPowerOff();
 }
 
 void onButtonDoubleClick(void) {
     Serial.println("[Button] Double click");
-    
-    // 进入配置模式（示例）
-    drawStatusScreen("Config Mode...");
-    ledTripleBlink();
+    gLastActivity = millis();
+
+    runConfigPortal();
+    drawHomeScreen();
+    wifiPowerOff();
+    gLastActivity = millis();
 }
 
 void onButtonLongPress(void) {
     Serial.println("[Button] Long press");
+    gLastActivity = millis();
     
     // 立即进入休眠
     drawStatusScreen("Going to sleep...");
